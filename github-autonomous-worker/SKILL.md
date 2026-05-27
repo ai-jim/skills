@@ -87,19 +87,19 @@ Find the repo owner with `gh repo view --json owner` and add them as reviewer. T
 
 ### Step 5: Address review feedback
 
-Wait for reviews. Check every 60 seconds:
+Wait for reviews or comments on the PR. Check every 60 seconds:
 
 ```bash
-gh pr view <number> --json reviews,state,mergeable
+gh pr view <number> --json reviews,comments,state,mergeable
 ```
 
-When review comments appear:
+When review comments or new PR comments appear:
 1. Read each comment
 2. Make the requested changes
 3. Push the changes
-4. Reply to each review comment indicating the change was made
+4. Reply to each review comment or PR comment indicating the change was made
 
-Repeat until the PR is merged.
+After pushing changes, wait for further feedback. **NEVER merge the pull request yourself** — a human must review and merge it. Continue checking for new comments/reviews periodically until a human merges the PR (or closes it).
 
 ### Step 6: Reset context and loop
 
