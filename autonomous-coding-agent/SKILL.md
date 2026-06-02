@@ -1,232 +1,170 @@
 ---
 name: autonomous-coding-agent
 description: >-
-  Fully autonomously work through issues in a GitHub or GitLab repository. Picks
-  a prioritized issue, implements it, creates a PR/MR, addresses review feedback,
-  and loops back to the next issue — all without asking the user any questions.
-  Use this skill when you want an AI to independently triage and resolve a backlog
-  of issues without hand-holding.
+  Fetch a GitHub or GitLab issue by URL, create a feature branch from it,
+  implement the described task strictly, push the branch, and open a pull/merge
+  request with a list of any deviations from the original plan. Use when the
+  user provides an issue URL to implement, or asks to work on / close / implement
+  an issue from a URL.
 ---
 
 # Autonomous Coding Agent
 
-You are an autonomous bot that works through issues in a repository without asking the user any questions. You communicate progress only through brief status comments on issues and PRs/MRs.
+Use this skill to turn a GitHub or GitLab issue URL into a completed implementation with a pull request (GitHub) or merge request (GitLab).
 
-The user provides the repo (e.g., `org/repo` or a URL) when invoking this skill. You have full access to the `gh` (GitHub) and `glab` (GitLab) CLIs, plus all standard development tools.
+## Quick Start
+
+```
+<user provides an issue URL>
+```
+
+1. Detect platform from URL (github.com vs gitlab.com)
+2. Parse the issue number from the URL
+3. Fetch with `gh issue view` or `glab issue view`
+4. Create branch `feat/<number>`, implement, push, open PR/MR
+
+See [REFERENCE.md](REFERENCE.md) for detailed branch naming and PR/MR format.
 
 ## Platform detection
 
-Before starting, detect which platform the repo is on:
+Detect the platform and set the right CLI from the URL the user provides:
 
 ```bash
-REMOTE_URL=$(git remote get-url origin)
-if echo "$REMOTE_URL" | grep -q gitlab; then
-  PLATFORM="gitlab"
+URL="$1"
+if echo "$URL" | grep -q gitlab; then
   CLI="glab"
-  MR_PREFIX="!"
-elif echo "$REMOTE_URL" | grep -q github; then
-  PLATFORM="github"
+  ISSUE_CMD="issue"
+  MR_CMD="mr"
+elif echo "$URL" | grep -q github; then
   CLI="gh"
-  MR_PREFIX="#"
+  ISSUE_CMD="issue"
+  MR_CMD="pr"
 else
-  echo "Unknown platform"; exit 1
+  echo "Unknown platform — URL must be from github.com or gitlab.com"; exit 1
 fi
 ```
 
-Use `$CLI` for all subsequent platform-specific commands. Verify the CLI is authenticated:
+Verify the CLI is authenticated:
 
 ```bash
-if [ "$PLATFORM" = "github" ]; then
-  gh auth status
-else
-  glab auth status
+$CLI auth status
+```
+
+## Prerequisites
+
+Before starting, verify the environment:
+
+```bash
+# 1. Must be inside a Git repository
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  echo "Not in a Git repository"; exit 1
 fi
+
+# 2. No uncommitted changes
+if ! git diff --quiet --exit-code; then
+  echo "Uncommitted changes detected"; exit 1
+fi
+if ! git diff --cached --quiet --exit-code; then
+  echo "Unstaged changes detected"; exit 1
+fi
+
+# 3. On the default branch (usually main, but detect it)
+DEFAULT_BRANCH=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | cut -d' ' -f5)
+: "${DEFAULT_BRANCH:=main}"            # fallback if detection fails
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
+  echo "Not on default branch ($DEFAULT_BRANCH) — currently on $CURRENT_BRANCH"; exit 1
+fi
+
+# 4. Up to date with remote
+git fetch origin "$DEFAULT_BRANCH"
+BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT_BRANCH")
+if [ "$BEHIND" -gt 0 ]; then
+  echo "Branch is $BEHIND commit(s) behind origin/$DEFAULT_BRANCH — pull first"; exit 1
+fi
+
+echo "All prerequisites met."
 ```
 
-## Core workflow
+## Workflow
 
-### Step 1: Decide what to work on
-
-List open issues labeled `prioritized` but NOT labeled `blocked`:
+### 1. Fetch the Issue
 
 **GitHub:**
 ```bash
-gh issue list --label prioritized --label '!blocked' --state open --json number,title,labels,assignees,updatedAt
+gh issue view <issue-url> --json title,body
 ```
 
 **GitLab:**
 ```bash
-glab issue list --label prioritized --not-label blocked --output json
+glab issue view <issue-url> --output json
 ```
 
-If there are none, wait 30 seconds and try again. Repeat indefinitely until an issue appears.
+Extract `title` and `body`. The body contains implementation instructions.
 
-If there are multiple, pick the one that is most sensible to work on next:
-- Consider issue dependencies (mentioning "depends on" or "blocked by" another issue)
-- Consider age — older issues first
-- Consider whether any issue was recently worked on (check comments for recent activity)
+### 2. Create a Branch
 
-Read the issue description and all comments:
+Use `feat/<issue-number>` (e.g., issue #42 → `feat/42`). If that branch exists locally or remotely, append `-1`, `-2`, etc.
+
+```bash
+git checkout -b feat/42
+```
+
+See [REFERENCE.md](REFERENCE.md#branch-naming) for conflict resolution.
+
+### 3. Implement the Task
+
+Follow the issue body strictly:
+
+- Make real, working changes — no placeholders or TODOs
+- Adhere to existing code conventions
+- Run tests, lint, and verification steps the repo expects
+- Commit with descriptive messages
+
+### 4. Push the Branch
+
+```bash
+git push -u origin feat/42
+```
+
+### 5. Open a Pull Request / Merge Request
+
+**PR title / MR title:**
+
+```
+Implement <original title> - closes #<number>
+```
+
+**Body:** List any changes that deviated from the original plan, or state "No deviations from the original plan."
 
 **GitHub:**
 ```bash
-gh issue view <number> --comments --json body,comments,title,labels,assignees
-```
-
-**GitLab:**
-```bash
-glab issue view <number> --comments --output json
-```
-
-If anything is unclear, post a comment on the issue asking for clarification, and add the `blocked` label while removing `wip`:
-
-**GitHub:**
-```bash
-gh issue edit <number> --remove-label wip --add-label blocked
-gh issue comment <number> --body "I'm blocked on..."
-```
-
-**GitLab:**
-```bash
-glab issue update <number> --unlabel wip --label blocked
-glab issue note <number> -m "I'm blocked on..."
-```
-
-Poll the issue every 60 seconds for new comments (check `updatedAt`). When a reply comes, remove `blocked`, add `wip`, and continue working.
-
-### Step 2: Claim the issue
-
-Label the issue with `wip`:
-
-**GitHub:**
-```bash
-gh issue edit <number> --add-label wip
-```
-**GitLab:**
-```bash
-glab issue update <number> --label wip
-```
-
-Assign yourself to the issue:
-
-**GitHub:**
-```bash
-gh issue edit <number> --add-assignee @me
-```
-**GitLab:**
-```bash
-glab issue update <number> --assignee @me
-```
-
-Create a new branch off the latest default branch:
-
-```bash
-git checkout main && git pull origin main
-git checkout -b <issue-type>/<issue-number>-<short-description>
-```
-
-Push the branch to signal to others you're working on it:
-
-```bash
-git push -u origin <branch>
-```
-
-### Step 3: Implement
-
-Implement the changes described in the issue. Follow the codebase conventions you observe. You are free to use all available tools.
-
-You may post brief status updates as comments on the issue, but no more than once per 5 minutes. Keep them short, e.g., "Pushed initial draft of the fix" or "Running tests now". Do not describe your plans — only report what you've done.
-
-If you encounter any ambiguity during implementation, post a comment on the issue asking for clarification, remove `wip`, add `blocked`, and wait (same commands as Step 1).
-
-Poll the issue every 60 seconds for new comments. When a reply comes, remove `blocked`, add `wip`, and continue working.
-
-### Step 4: Create a merge request / pull request
-
-Once the implementation is complete, push your branch and create a PR/MR:
-
-**GitHub:**
-```bash
-git push origin <branch>
 gh pr create \
-  --title "Closes #<issue-number>: <brief description>" \
-  --body "Closes #<issue-number>" \
-  --assignee @me
+  --title "Implement <title> - closes #<number>" \
+  --body "<deviations>"
 ```
 
 **GitLab:**
 ```bash
-git push origin <branch>
 glab mr create \
-  --title "Closes #<issue-number>: <brief description>" \
-  --description "Closes #<issue-number>" \
-  --assignee @me
+  --title "Implement <title> - closes #<number>" \
+  --description "<deviations>"
 ```
 
-Find the repo owner/namespace and add them as reviewer:
+### 6. Confirm
 
 **GitHub:**
 ```bash
-gh repo view --json owner | jq -r '.owner.login'
-gh pr edit <number> --add-reviewer <owner>
+gh pr view --web
 ```
 
 **GitLab:**
 ```bash
-glab repo view --output json | jq -r '.namespace.path'
-glab mr update <number> --reviewer <owner>
+glab mr view --web
 ```
 
-The title MUST start with "Closes #<issue-number>:" so the platform links the PR/MR to the issue.
+## Notes
 
-### Step 5: Address review feedback
-
-Wait for reviews or comments on the PR/MR. Check every 60 seconds:
-
-**GitHub:**
-```bash
-gh pr view <number> --json reviews,comments,state,mergeable
-```
-
-**GitLab:**
-```bash
-glab mr view <number> --comments --output json
-```
-
-When review comments or new PR/MR comments appear:
-1. Read each comment
-2. Make the requested changes
-3. Push the changes
-4. Reply to each comment indicating the change was made
-
-**GitHub (reply to review):**
-```bash
-gh pr comment <number> --body "Addressed in <commit-sha>"
-```
-
-**GitLab (reply to discussion):**
-```bash
-glab mr note create <number> -m "Addressed in <commit-sha>"
-```
-
-After pushing changes, wait for further feedback. **NEVER merge the pull request / merge request yourself** — a human must review and merge it. Continue checking for new comments/reviews periodically until a human merges the PR/MR (or closes it).
-
-### Step 6: Reset context and loop
-
-Once the PR/MR is merged, do NOT assume anything from the previous cycle still holds. Your conversation history will contain stale state about branches, labels, and issue statuses. Actively reset your mental model:
-
-1. Switch back to the default branch: `git checkout main && git pull origin main`
-2. Delete any local branches from the previous cycle
-3. Re-read the list of open issues from scratch — do not rely on memory of what issues existed before
-4. Check the current state of labels on each issue — labels may have changed
-
-After you've completed **3 consecutive cycles** (3 issues resolved in one session), post a brief summary comment on the last resolved issue listing what was accomplished, then continue the loop. This gives repo collaborators visibility into what's been done.
-
-If at any point there are no more prioritized unblocked issues, report the summary in a comment and stop looping — do not wait indefinitely.
-
-## Style guidelines
-
-- Never ask the user questions directly. If you need clarification, post a comment on the issue, label it `blocked`, and wait for a reply.
-- Status comments on issues must be brief, factual, and no more than once per 5 minutes.
-- Follow the codebase's existing conventions for code style, commit messages, and branch naming.
-- If the branch goes out of date with the default branch, rebase or merge the default branch into your branch as needed.
+- `gh` (GitHub) and/or `glab` (GitLab) CLI must be installed and authenticated
+- Default branch assumed to be `main`; adjust if different
+- Always push before creating the PR/MR

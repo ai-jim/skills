@@ -1,4 +1,4 @@
-# Reference: GitHub Issue Implementer
+# Reference: Autonomous Coding Agent
 
 ## Branch Naming
 
@@ -35,12 +35,12 @@ git branch -r --list origin/feat/42
 | `feat/<N>` does not exist locally or remotely | Use `feat/<N>` |
 | `feat/<N>` exists locally or remotely | Append `-1`, `-2`, etc. |
 
-## PR Format
+## PR/MR Format
 
 ### Title
 
 ```
-Implement <original GitHub Issue title> - closes #<issue-number>
+Implement <original issue title> - closes #<issue-number>
 ```
 
 ### Body
@@ -62,15 +62,23 @@ No deviations from the original plan.
 
 ### Command
 
+**GitHub:**
 ```bash
 gh pr create \
   --title "Implement <title> - closes #<number>" \
   --body "<deviations>"
 ```
 
+**GitLab:**
+```bash
+glab mr create \
+  --title "Implement <title> - closes #<number>" \
+  --description "<deviations>"
+```
+
 ### Deviation Tracking
 
-Before opening the PR, review what was actually implemented vs. what the issue asked for:
+Before opening the PR/MR, review what was actually implemented vs. what the issue asked for:
 
 ```bash
 git log origin/main..HEAD --oneline
@@ -81,6 +89,6 @@ Compare the changes against the issue body and list any intentional or unintenti
 
 ## Notes
 
-- The `gh` CLI must be authenticated (`gh auth status` to verify)
+- The appropriate CLI (`gh` or `glab`) must be authenticated
 - If the repo uses a different default branch (e.g., `master`, `develop`), adjust commands accordingly
 - If the issue body references files or APIs that don't exist, adapt to what's available and note the deviation
